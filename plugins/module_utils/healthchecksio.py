@@ -282,9 +282,38 @@ class Checks(object):
         else:
             return "(unable to determine uuid)"
 
+    def get_existing_check_from_unique_param(self):
+        response = self.rest.get("checks")
+        if response.status_code != 200:
+            self.module.fail_json(
+                changed=False,
+                msg="Server responded with status {0}".format(response.status)
+            )
+        checks = response.json["checks"]
+        request_params = dict(self.module.params)
+        unique = request_params["unique"]
+        c = [
+            check
+            for check in checks
+            if all(check[k] == request_params[k] for k in unique)
+        ]
+        if len(c) > 1 and len(unique) != 0:
+            self.module.fail_json(
+                changed=False,
+                msg=f"Expected to find one check matching unique parameters, {len(c)} found",
+            )
+        if len(c) == 0:
+            return None
+        return c[0]
+
+    def get_existing_check_from_uuid(self, uuid):
+        response = self.rest.get("checks/{0}".format(uuid))
+        if response.status_code == 200:
+            return response.json
+        else:
+            return None
+
     def create(self):
-        if self.module.check_mode:
-            self.module.exit_json(changed=False, data={})
 
         endpoint = "checks/"
 
@@ -305,19 +334,7 @@ class Checks(object):
         tags = self.module.params.get("tags", [])
         request_params["tags"] = " ".join(tags)
 
-        checks = self.rest.get("checks").json["checks"]
-        unique = request_params["unique"]
-        c = [
-            check
-            for check in checks
-            if all(check[k] == request_params[k] for k in unique)
-        ]
-
-        if len(c) > 1 and len(unique) != 0:
-            self.module.fail_json(
-                changed=False,
-                msg=f"Expected to find one check matching unique parameters, {len(c)} found",
-            )
+        c = self.get_existing_check_from_unique_param()
 
         # Extract all available channels if "*" is given
         if request_params["channels"] == "*":
@@ -328,18 +345,41 @@ class Checks(object):
             channels = request_params["channels"]
 
         # If all request parameters (except unique and api_key) match, exit without changes
-        skip_idempotency_params = ["unique", "api_key", "channels"]
-        if (
-            len(c) == 1
-            and all(
-                c[0][k] == request_params[k]
+        skip_idempotency_params = [
+            "unique",
+            "api_key",  # Kept for backward compatibility
+            "management_api_key",
+            "management_api_token",
+            "management_api_base_url",
+            "ping_api_key",
+            "ping_api_base_url",
+            "ping_api_token",
+            "channels",
+        ]
+        if all(
+                c[k] == request_params[k]
                 for k in request_params
                 if k not in skip_idempotency_params
-            )
-            and sorted(c[0]["channels"].split(",")) == sorted(channels.split(","))
-        ):
-            self.module.exit_json(changed=False, data=c[0], uuid=self.get_uuid(c[0]))
+            ) and sorted(c["channels"].split(",")) == sorted(channels.split(",")):
+            self.module.exit_json(changed=False, data=c, uuid=self.get_uuid(c))
 
+        if self.module.check_mode:
+            if c != None:
+                uuid = self.get_uuid(c)
+                self.module.exit_json(
+                    changed=True,
+                    msg="Existing check {0} found and updated".format(uuid),
+                    data=c,
+                    uuid=uuid
+                )
+
+            self.module.exit_json(
+                changed=True,
+                msg="New check {0} created".format(uuid),
+                data=c,
+                uuid="00000000-0000-0000-0000-000000000000"
+            )
+            
         response = self.rest.post(endpoint, data=request_params)
         json_data = response.json
         status_code = response.status_code
@@ -373,10 +413,41 @@ class Checks(object):
         self.module.exit_json(changed=True, data=json_data)
 
     def delete(self):
-        if self.module.check_mode:
-            self.module.exit_json(changed=False, data={})
+        # if self.module.check_mode:
+        #     self.module.exit_json(changed=False, data={})
+
 
         uuid = self.module.params.get("uuid")
+        
+        if uuid is None or uuid == "":
+            c = self.get_existing_check_from_unique_param()
+
+            if c == None:
+                if self.module.check_mode:
+                    self.module.exit_json(
+                        changed=False, msg="Check not found"
+                    )
+                self.module.exit_json(
+                    changed=False, msg="Check not found"
+                )
+
+            uuid = self.get_uuid(c)
+            if self.module.check_mode:
+                self.module.exit_json(
+                    changed=True, msg="Check {0} successfully deleted".format(uuid)
+                )
+
+        if self.module.check_mode:
+            c = self.get_existing_check_from_uuid(uuid)
+            if c is None:
+                self.module.exit_json(
+                    changed=False, msg="Check not found"
+                )
+            else:
+                self.module.exit_json(
+                    changed=True, msg="Check {0} successfully deleted".format(uuid)
+                )
+                
         endpoint = "checks/{0}".format(uuid)
         response = self.rest.delete(endpoint)
         status_code = response.status_code

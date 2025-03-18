@@ -212,7 +212,7 @@ def main():
     module = AnsibleModule(
         argument_spec=argument_spec,
         supports_check_mode=True,
-        required_if=[("state", "absent", ["uuid"]), ("state", "pause", ["uuid"])],
+        required_if=[("state", "pause", ["uuid"])],
         required_together=[("schedule", "tz")],
         mutually_exclusive=[("timeout", "schedule"), ("timeout", "tz")],
     )
